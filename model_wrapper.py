@@ -1,51 +1,78 @@
-import math
+import yaml
 import torch
 import numpy as np
 from torch import nn
-from datasets import Dataset
 from torch.nn import functional as F
-from EquivariantElucidatedDiffusion import *
+from torch_scatter import scatter_mean
+from argparse import ArgumentParser, Namespace, FileType
+from DockingModels import EquivariantElucidatedDiffusion, en_score_model_l1_4M_drop01, en_score_model_l1_21M_drop01, model_entrypoint
+
+
+class ConfidenceHead(nn.Module):
+    def __init__(self, in_dim, out_dim):
+        super().__init__()
+        self.linear = nn.Sequential(
+            nn.LayerNorm(in_dim),
+            nn.Linear(in_dim, out_dim))
+
+    def forward(self, x):
+        return self.linear(x)
 
 class EGNNModelWrapper(nn.Module):
     def __init__(
         self,
+        model_dir,
+        ckpt_path,
+        device,
+        sigma_max=160,
+        sigma_min=0.002,
+        rho=7,
+        S_churn=80,
+        S_min=0.05,
+        S_max=50,
+        S_noise=1.003,
     ):
         super().__init__()
+        self.model_dir = model_dir
+        self.ckpt_path = ckpt_path
+        self.device = device
+        self.sigma_max = sigma_max
+        self.sigma_min = sigma_min
+        self.rho = rho
+        self.S_churn = S_churn
+        self.S_min = S_min
+        self.S_max = S_max
+        self.S_noise = S_noise
+        self.load_model()
+        self.confidence_head = ConfidenceHead(3, 1)
 
-    def load(self, model_name, ckpt_path, device, yaml, lm_embedding_type='esm'):
-        create_model = model_entrypoint(model_name)
-        score_model = create_model(device=device, lm_embedding_type=lm_embedding_type)
-        self.original_model = score_model
-        if ckpt_path:
-            state_dict = torch.load(f'ckpt_path', map_location=torch.device('cpu'))
-            self.original_model.load_state_dict(state_dict['net'], strict=True)
-
-        self.original_model.to(device)
-
-        with open(f'{args.model_dir}/model_parameters.yml') as f:
+    def load_model(self):
+        with open(f'{self.model_dir}/model_parameters.yml') as f:
             model_args = Namespace(**yaml.full_load(f))
 
-        self.model_args = model_args
+        create_model = model_entrypoint(model_args.model_name)
+        score_model = create_model(device=self.device, lm_embedding_type='esm')
+        model = EquivariantElucidatedDiffusion(
+            net=score_model,
+            sigma_max=self.sigma_max,
+            sigma_min=self.sigma_min,
+            sigma_data=model_args.sigma_data,
+            rho = self.rho,
+            S_churn=self.S_churn,
+            S_min=self.S_min,
+            S_max=self.S_max,
+            S_noise=self.S_noise,
+        )
 
-    def forward(self, data, times, dtype):
+        state_dict = torch.load(f'{self.model_dir}/{self.ckpt_path}', map_location=torch.device('cpu'))
+        model.load_state_dict(state_dict, strict=True)
+        self.diffusion_model = model.to(self.device)
 
-        x, sigma = data.noised_atom_pos, data.padded_sigmas
+    def forward(self, data, num_steps, dtype):
 
-        batch = data['ligand'].batch
-        c_skip = self.model_args.sigma_data ** 2 / (sigma[batch] ** 2 + self.model_args.sigma_data ** 2)
-        c_out = sigma[batch] * self.model_args.sigma_data / (sigma[batch] ** 2 + self.model_args.sigma_data ** 2).sqrt()
-        c_in = 1 / (self.model_args.sigma_data ** 2 + sigma[batch] ** 2).sqrt()
-        c_noise = (sigma/self.model_args.sigma_data).log() / 4
+        _, x_t = self.diffusion_model.sample(data, num_steps, dtype)
+        lig_seq_len = torch.bincount(data['ligand'].batch).tolist()
+        lig_coords = torch.split(x_t, lig_seq_len)
+        pred = self.confidence_head(scatter_mean(x_t, data['ligand'].batch, dim=0))
 
-        data['ligand'].pos = c_in * x
-
-        _, node_attr, coords_attr = self.original_model(data, c_noise, dtype)
-
-        # Return only the coords and node_attr
-        emb_dict = {
-            'coords_attr': coords_attr.detach().cpu(),
-            'node_attr': node_attr.detach().cpu()
-        }
-
-        emb_dataset = Dataset.from_dict(emb_dict)
-        return emb_dataset
+        return pred, lig_coords
