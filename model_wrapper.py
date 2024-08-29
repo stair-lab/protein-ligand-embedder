@@ -5,7 +5,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch_scatter import scatter_mean
 from argparse import ArgumentParser, Namespace, FileType
-from DockingModels import EquivariantElucidatedDiffusion, en_score_model_l1_4M_drop01, en_score_model_l1_21M_drop01, model_entrypoint
+from DockingModels import EquivariantElucidatedDiffusion, en_score_model_l1_4M_drop01, en_score_model_l1_21M_drop01, model_entrypoint, CustomConfig
 
 
 class ConfidenceHead(nn.Module):
@@ -21,51 +21,16 @@ class ConfidenceHead(nn.Module):
 class EGNNModelWrapper(nn.Module):
     def __init__(
         self,
-        model_dir,
-        ckpt_path,
-        device,
-        sigma_max=160,
-        sigma_min=0.002,
-        rho=7,
-        S_churn=80,
-        S_min=0.05,
-        S_max=50,
-        S_noise=1.003,
+        model_name,
+        config
     ):
         super().__init__()
-        self.model_dir = model_dir
-        self.ckpt_path = ckpt_path
-        self.device = device
-        self.sigma_max = sigma_max
-        self.sigma_min = sigma_min
-        self.rho = rho
-        self.S_churn = S_churn
-        self.S_min = S_min
-        self.S_max = S_max
-        self.S_noise = S_noise
-        self.load_model()
+        self.model_name = model_name
+        self.config = config
         self.confidence_head = ConfidenceHead(3, 1)
 
     def load_model(self):
-        with open(f'{self.model_dir}/model_parameters.yml') as f:
-            model_args = Namespace(**yaml.full_load(f))
-
-        create_model = model_entrypoint(model_args.model_name)
-        score_model = create_model(device=self.device, lm_embedding_type='esm')
-        model = EquivariantElucidatedDiffusion(
-            net=score_model,
-            sigma_max=self.sigma_max,
-            sigma_min=self.sigma_min,
-            sigma_data=model_args.sigma_data,
-            rho = self.rho,
-            S_churn=self.S_churn,
-            S_min=self.S_min,
-            S_max=self.S_max,
-            S_noise=self.S_noise,
-        )
-
-        state_dict = torch.load(f'{self.model_dir}/{self.ckpt_path}', map_location=torch.device('cpu'))
-        model.load_state_dict(state_dict, strict=True)
+        model = EquivariantElucidatedDiffusion.from_pretrained(self.model_name, config=self.config, subfolder="ckpts")
         self.diffusion_model = model.to(self.device)
 
     def forward(self, data, num_steps, dtype):

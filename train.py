@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from dataloader import MiniDataset
 from model_wrapper import EGNNModelWrapper
 from utils import get_rmsds, AverageMeter
+from DockingModels import CustomConfig
 
 from argparse import ArgumentParser
 
@@ -61,14 +62,12 @@ def train(args, device, model, optimizer, scheduler, model_ema, train_loader, va
             batch = batch.to(args.device)
             optimizer.zero_grad()
             batch_loss = torch.tensor(0.0, device=device)
-            
+
             with torch.autocast(device_type='cuda', dtype=dtype):
                 pred, lig_coords = model(batch, args.num_steps, dtype=dtype)
                 target = get_rmsds(lig_coords, batch).to(args.device)
-                print(target)
                 loss = F.mse_loss(pred.float(), target.float())
                 loss /= args.accum_steps
-                print(loss)
                 batch_idx += 1
             loss.backward()
             batch_loss += loss
@@ -88,7 +87,7 @@ def train(args, device, model, optimizer, scheduler, model_ema, train_loader, va
         val_loss = evaluate(args, model_ema, val_loader, dtype)
         val_losses.append(val_loss)
 
-        scheduler.step(val_losses if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau) else None)                
+        scheduler.step(val_losses if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau) else None)
 
 
 def main(args):
@@ -110,7 +109,8 @@ def main(args):
                               num_workers=args.num_dataloader_workers, pin_memory=args.pin_memory)
 
     ''' Model '''
-    model = EGNNModelWrapper(args.model_dir, args.ckpt_path, device).to(device)
+    congig = CustomConfig.from_pretrained(args.model_dir, subfolder="ckpts") #change the params of diffusion sampling process as needed
+    model = EGNNModelWrapper(args.model_dir, congig).to(device)
 
     model_ema = ModelEmaV2(model, decay=0.9999, device=device)
 
