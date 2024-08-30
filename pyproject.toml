@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "protein_ligand_embedder"
+version = "0.0.1"
+authors = [
+  { name="Sang Truong", email="sttruong@cs.stanford.edu" },
+]
+description = "A small package providing a function for embedding extraction"
+readme = "README.md"
+requires-python = ">=3.8"
+
+[project.urls]
+Homepage = "https://github.com/stair-lab/protein-ligand-embedder"
+
+[tool.hatch.build.targets.wheel]
+      packages = ["src/protein_ligand_embedder"]
