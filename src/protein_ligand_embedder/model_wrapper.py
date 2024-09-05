@@ -5,6 +5,7 @@ from tqdm import tqdm
 from torch_geometric.loader import DataLoader
 from DockingModels import EquivariantElucidatedDiffusion
 from datasets import Dataset
+from torch_scatter import scatter, scatter_mean
 
 
 class ProteinLigandWrapper(nn.Module):
@@ -37,11 +38,11 @@ class ProteinLigandWrapper(nn.Module):
         tqdm_dataloader = tqdm(dataloader)
         for batch in tqdm_dataloader:
             batch = batch.to(self.diffusion_model.device)
-            _, x_t = self.diffusion_model.sample(batch, num_steps, dtype)
-            lig_seq_len = torch.bincount(batch['ligand'].batch).tolist()
-            lig_coords = torch.split(x_t, lig_seq_len)
-        
-            col_emb.append(lig_coords)
+            x_t, rec_node_attr, lig_node_attr = self.diffusion_model.sample(batch, num_steps, dtype)
+            rec_node_attr = scatter_mean(rec_node_attr, batch['receptor'].batch, dim=0)
+            lig_node_attr = scatter_mean(lig_node_attr, batch['ligand'].batch, dim=0)
+            embedding = torch.cat([lig_node_attr, rec_node_attr], dim=1)
+            col_emb.append(embedding)
         emb_dict['embedding'] = col_emb
 
         return Dataset.from_dict(emb_dict)
